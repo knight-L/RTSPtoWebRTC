@@ -1,3 +1,9 @@
+/*
+ * @Author: Knight
+ * @Date: 2024-12-12 09:58:57
+ * @LastEditors: Knight
+ * @LastEditTime: 2024-12-12 10:38:05
+ */
 package main
 
 import (
@@ -18,7 +24,7 @@ func main() {
 		log.Println(sig)
 		done <- true
 	}()
-	log.Println("Server Start Awaiting Signal")
+	log.Println("服务启动")
 	<-done
-	log.Println("Exiting")
+	log.Println("退出")
 }

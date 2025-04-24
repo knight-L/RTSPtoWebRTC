@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/deepch/vdk/av"
 
+	"github.com/deepch/vdk/format/mp4"
 	webrtc "github.com/deepch/vdk/format/webrtcv3"
 	"github.com/gin-gonic/gin"
 )
@@ -29,18 +32,37 @@ func serveHTTP() {
 		router.GET("/", HTTPAPIServerIndex)
 		router.GET("/stream/player/:uuid", HTTPAPIServerStreamPlayer)
 	}
+
 	router.POST("/stream/receiver/:uuid", HTTPAPIServerStreamWebRTC)
 	router.GET("/stream/codec/:uuid", HTTPAPIServerStreamCodec)
 	router.POST("/stream", HTTPAPIServerStreamWebRTC2)
 
 	router.StaticFS("/static", http.Dir("web/static"))
-	err := router.Run(Config.Server.HTTPPort)
-	if err != nil {
-		log.Fatalln("Start HTTP Server error", err)
+
+	if Config.Server.HTTPPort != "" {
+		err := router.Run(Config.Server.HTTPPort)
+		if err != nil {
+			log.Fatalln("Start HTTP Server error", err)
+		}
+	} else {
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			log.Fatalln("Start HTTP Server error", err)
+		}
+
+		addr := listener.Addr().(*net.TCPAddr)
+
+		fmt.Printf("SERVER_INFO:http://127.0.0.1:%d\n", addr.Port)
+
+		// 启动服务器
+		err = router.RunListener(listener)
+		if err != nil {
+			log.Fatalln("Start Router Server error", err)
+		}
 	}
 }
 
-//HTTPAPIServerIndex  index
+// HTTPAPIServerIndex  index
 func HTTPAPIServerIndex(c *gin.Context) {
 	_, all := Config.list()
 	if len(all) > 0 {
@@ -55,7 +77,7 @@ func HTTPAPIServerIndex(c *gin.Context) {
 	}
 }
 
-//HTTPAPIServerStreamPlayer stream player
+// HTTPAPIServerStreamPlayer stream player
 func HTTPAPIServerStreamPlayer(c *gin.Context) {
 	_, all := Config.list()
 	sort.Strings(all)
@@ -67,7 +89,7 @@ func HTTPAPIServerStreamPlayer(c *gin.Context) {
 	})
 }
 
-//HTTPAPIServerStreamCodec stream codec
+// HTTPAPIServerStreamCodec stream codec
 func HTTPAPIServerStreamCodec(c *gin.Context) {
 	if Config.ext(c.Param("uuid")) {
 		Config.RunIFNotRun(c.Param("uuid"))
@@ -98,7 +120,7 @@ func HTTPAPIServerStreamCodec(c *gin.Context) {
 	}
 }
 
-//HTTPAPIServerStreamWebRTC stream video over WebRTC
+// HTTPAPIServerStreamWebRTC stream video over WebRTC
 func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 	if !Config.ext(c.PostForm("suuid")) {
 		log.Println("Stream Not Found")
@@ -114,10 +136,38 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 	if len(codecs) == 1 && codecs[0].Type().IsAudio() {
 		AudioOnly = true
 	}
-	muxerWebRTC := webrtc.NewMuxer(webrtc.Options{ICEServers: Config.GetICEServers(), ICEUsername: Config.GetICEUsername(), ICECredential: Config.GetICECredential(), PortMin: Config.GetWebRTCPortMin(), PortMax: Config.GetWebRTCPortMax()})
+	// 创建一个目录
+	err := os.MkdirAll("save", 0755)
+	if err != nil {
+		log.Println("Error creating mkdir:", err)
+		return
+	}
+	// 创建一个 MP4 文件
+	outputFile, err := os.Create(fmt.Sprintf("save/%s_%s.mp4", c.Param("uuid"), time.Now().Format("20060102_150405")))
+	if err != nil {
+		log.Println("Error creating file:", err)
+		return
+	}
+
+	// 初始化 MP4 写入器
+	muxerMp4 := mp4.NewMuxer(outputFile)
+	err = muxerMp4.WriteHeader(codecs)
+	if err != nil {
+		log.Println("Mp4WriteHeader", err)
+		return
+	}
+
+	muxerWebRTC := webrtc.NewMuxer(
+		webrtc.Options{
+			ICEServers:    Config.GetICEServers(),
+			ICEUsername:   Config.GetICEUsername(),
+			ICECredential: Config.GetICECredential(),
+			PortMin:       Config.GetWebRTCPortMin(),
+			PortMax:       Config.GetWebRTCPortMax(),
+		})
 	answer, err := muxerWebRTC.WriteHeader(codecs, c.PostForm("data"))
 	if err != nil {
-		log.Println("WriteHeader", err)
+		log.Println("WebRTCWriteHeader", err)
 		return
 	}
 	_, err = c.Writer.Write([]byte(answer))
@@ -129,6 +179,9 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 		cid, ch := Config.clAd(c.PostForm("suuid"))
 		defer Config.clDe(c.PostForm("suuid"), cid)
 		defer muxerWebRTC.Close()
+		defer outputFile.Close()
+		defer muxerMp4.WriteTrailer()
+
 		var videoStart bool
 		noVideo := time.NewTimer(10 * time.Second)
 		for {
@@ -144,9 +197,12 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 				if !videoStart && !AudioOnly {
 					continue
 				}
-				err = muxerWebRTC.WritePacket(pck)
-				if err != nil {
-					log.Println("WritePacket", err)
+				if err = muxerWebRTC.WritePacket(pck); err != nil {
+					log.Println("WebRTCWritePacket", err)
+					return
+				}
+				if err = muxerMp4.WritePacket(pck); err != nil {
+					log.Println("Mp4WritePacket", err)
 					return
 				}
 			}
@@ -182,17 +238,19 @@ type ResponseError struct {
 
 func HTTPAPIServerStreamWebRTC2(c *gin.Context) {
 	url := c.PostForm("url")
+
 	if _, ok := Config.Streams[url]; !ok {
 		Config.Streams[url] = StreamST{
-			URL:      url,
-			OnDemand: true,
-			Cl:       make(map[string]viewer),
+			URL:          url,
+			OnDemand:     true,
+			DisableAudio: true,
+			Cl:           make(map[string]viewer),
 		}
 	}
 
 	Config.RunIFNotRun(url)
-
 	codecs := Config.coGe(url)
+
 	if codecs == nil {
 		log.Println("Stream Codec Not Found")
 		c.JSON(500, ResponseError{Error: Config.LastError.Error()})

@@ -1,3 +1,9 @@
+/*
+ * @Author: Knight
+ * @Date: 2024-12-12 09:58:57
+ * @LastEditors: Knight
+ * @LastEditTime: 2024-12-15 23:06:25
+ */
 package main
 
 import (
@@ -23,8 +29,9 @@ func serveStreams() {
 }
 func RTSPWorkerLoop(name, url string, OnDemand, DisableAudio, Debug bool) {
 	defer Config.RunUnlock(name)
+
 	for {
-		log.Println("Stream Try Connect", name)
+		log.Println("链接视频流：", name)
 		err := RTSPWorker(name, url, OnDemand, DisableAudio, Debug)
 		if err != nil {
 			log.Println(err)
@@ -37,7 +44,9 @@ func RTSPWorkerLoop(name, url string, OnDemand, DisableAudio, Debug bool) {
 		time.Sleep(1 * time.Second)
 	}
 }
+
 func RTSPWorker(name, url string, OnDemand, DisableAudio, Debug bool) error {
+
 	keyTest := time.NewTimer(20 * time.Second)
 	clientTest := time.NewTimer(20 * time.Second)
 	//add next TimeOut
@@ -46,9 +55,15 @@ func RTSPWorker(name, url string, OnDemand, DisableAudio, Debug bool) error {
 		return err
 	}
 	defer RTSPClient.Close()
-	if RTSPClient.CodecData != nil {
-		Config.coAd(name, RTSPClient.CodecData)
+	var WaitCodec bool
+	if RTSPClient.WaitCodec {
+		WaitCodec = true
+	} else {
+		if len(RTSPClient.CodecData) > 0 {
+			Config.coAd(name, RTSPClient.CodecData)
+		}
 	}
+
 	var AudioOnly bool
 	if len(RTSPClient.CodecData) == 1 && RTSPClient.CodecData[0].Type().IsAudio() {
 		AudioOnly = true
@@ -69,10 +84,15 @@ func RTSPWorker(name, url string, OnDemand, DisableAudio, Debug bool) error {
 			switch signals {
 			case rtspv2.SignalCodecUpdate:
 				Config.coAd(name, RTSPClient.CodecData)
+				WaitCodec = false
 			case rtspv2.SignalStreamRTPStop:
 				return ErrorStreamExitRtspDisconnect
 			}
 		case packetAV := <-RTSPClient.OutgoingPacketQueue:
+			if WaitCodec {
+				continue
+			}
+
 			if AudioOnly || packetAV.IsKeyFrame {
 				keyTest.Reset(20 * time.Second)
 			}

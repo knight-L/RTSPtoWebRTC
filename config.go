@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -15,18 +15,18 @@ import (
 	"github.com/deepch/vdk/av"
 )
 
-//Config global
+// Config global
 var Config = loadConfig()
 
-//ConfigST struct
+// ConfigST struct
 type ConfigST struct {
-	mutex   sync.RWMutex
-	Server  ServerST            `json:"server"`
-	Streams map[string]StreamST `json:"streams"`
+	mutex     sync.RWMutex
+	Server    ServerST            `json:"server"`
+	Streams   map[string]StreamST `json:"streams"`
 	LastError error
 }
 
-//ServerST struct
+// ServerST struct
 type ServerST struct {
 	HTTPPort      string   `json:"http_port"`
 	ICEServers    []string `json:"ice_servers"`
@@ -36,7 +36,7 @@ type ServerST struct {
 	WebRTCPortMax uint16   `json:"webrtc_port_max"`
 }
 
-//StreamST struct
+// StreamST struct
 type StreamST struct {
 	URL          string `json:"url"`
 	Status       bool   `json:"status"`
@@ -55,6 +55,7 @@ type viewer struct {
 func (element *ConfigST) RunIFNotRun(uuid string) {
 	element.mutex.Lock()
 	defer element.mutex.Unlock()
+
 	if tmp, ok := element.Streams[uuid]; ok {
 		if tmp.OnDemand && !tmp.RunLock {
 			tmp.RunLock = true
@@ -116,7 +117,7 @@ func (element *ConfigST) GetWebRTCPortMax() uint16 {
 
 func loadConfig() *ConfigST {
 	var tmp ConfigST
-	data, err := ioutil.ReadFile("config.json")
+	data, err := os.ReadFile("config.json")
 	if err == nil {
 		err = json.Unmarshal(data, &tmp)
 		if err != nil {
@@ -127,7 +128,7 @@ func loadConfig() *ConfigST {
 			tmp.Streams[i] = v
 		}
 	} else {
-		addr := flag.String("listen", "8083", "HTTP host:port")
+		addr := flag.String("listen", "", "HTTP host:port")
 		udpMin := flag.Int("udp_min", 0, "WebRTC UDP port min")
 		udpMax := flag.Int("udp_max", 0, "WebRTC UDP port max")
 		iceServer := flag.String("ice_server", "", "ICE Server")
@@ -183,7 +184,13 @@ func (element *ConfigST) coGe(suuid string) []av.CodecData {
 			for _, codec := range tmp.Codecs {
 				if codec.Type() == av.H264 {
 					codecVideo := codec.(h264parser.CodecData)
-					if codecVideo.SPS() != nil && codecVideo.PPS() != nil && len(codecVideo.SPS()) > 0 && len(codecVideo.PPS()) > 0 {
+
+					if len(codecVideo.RecordInfo.SPS) > 0 &&
+						len(codecVideo.RecordInfo.PPS) > 0 &&
+						codecVideo.SPS() != nil &&
+						codecVideo.PPS() != nil &&
+						len(codecVideo.SPS()) > 0 &&
+						len(codecVideo.PPS()) > 0 {
 						//ok
 						//log.Println("Ok Video Ready to play")
 					} else {
